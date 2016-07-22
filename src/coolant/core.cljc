@@ -60,21 +60,21 @@
    Notifies observers if their watched value has changed."
   [core next-state]
   (let [{:keys [observers state evals]} @core]
-    (swap! core assoc :state next-state
-           :evals
-           (reduce
-            (fn [next-evals {:keys [evaluator notify!]}]
-              (let [prev (if (contains? evals evaluator)
-                           (get evals evaluator)
-                           (-evaluate evaluator state))
-                    curr (if (contains? next-evals evaluator)
-                           (get next-evals evaluator)
-                           (-evaluate evaluator next-state))]
-                (when-not (= prev curr)
-                  ;; TODO setImmediate?
-                  (notify! curr))
-                (assoc next-evals evaluator curr)))
-            {} observers))))
+    (vswap! core assoc :state next-state
+            :evals
+            (reduce
+             (fn [next-evals {:keys [evaluator notify!]}]
+               (let [prev (if (contains? evals evaluator)
+                            (get evals evaluator)
+                            (-evaluate evaluator state))
+                     curr (if (contains? next-evals evaluator)
+                            (get next-evals evaluator)
+                            (-evaluate evaluator next-state))]
+                 (when-not (= prev curr)
+                   ;; TODO setImmediate?
+                   (notify! curr))
+                 (assoc next-evals evaluator curr)))
+             {} observers))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Public
@@ -83,7 +83,7 @@
   "Creates a new core. Optionally takes collection of stores to register."
   ([] (core nil))
   ([stores]
-   (atom (reduce add-store (Core. {} [] nil {}) stores))))
+   (volatile! (reduce add-store (Core. {} [] nil {}) stores))))
 
 (defn store
   "Returns a Store instance to be registered at key, k in core, with initial state, init.
@@ -107,6 +107,10 @@
     (toString [_]
       (str "Store " (str k)))))
 
+#?(:clj (def ^:private lookup-sentinel
+          "Clojure equivalent of the ClojureScript lookup sentinel."
+          (gensym "lookup-sentinel")))
+
 (defn getter
   "Returns a evaluatable object that produces a value given a non-empty sequence
    of evaluatable dependencies (ie, stores or other getters) and a function
@@ -114,7 +118,7 @@
    The function must be pure."
   [deps f]
   {:pre [(seq deps) (every? #(satisfies? Evaluator %) deps) (fn? f)]}
-  (let [mem (atom {})]
+  (let [mem (volatile! {})]
     (reify
       Evaluator
       (-evaluate [_ state]
@@ -122,8 +126,8 @@
               v (get @mem args lookup-sentinel)]
           (if (identical? v lookup-sentinel)
             (let [v (apply f args)]
-             (reset! mem {args v}) ;; cache last value. TODO: protocol for diff strategies?
-             v)
+              (vreset! mem {args v}) ;; cache last value. TODO: protocol for diff strategies?
+              v)
             v)))
       Object
       (toString [this]
@@ -153,15 +157,15 @@
    Returns function to unregister observer."
   [core evaluator f]
   (let [observer (make-observer evaluator f)]
-    (swap! core add-observer observer)
-    (fn [] (swap! core remove-observer observer))))
+    (vswap! core add-observer observer)
+    (fn [] (vswap! core remove-observer observer))))
 
 (defn register-stores!
   "Adds stores to core. Returns updated core."
   ([core stores]
    (register-stores! core stores false))
   ([core stores silent?]
-   (swap! core (partial reduce add-store) stores)
+   (vswap! core (partial reduce add-store) stores)
    (when-not silent?
      (set-state! core (:state @core)))
    core))
